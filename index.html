@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mora Fashion — Painel WhatsApp</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #0D0D0F; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 9999px; }
+    @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .pulse-dot { animation: pulse-dot 1.2s ease-in-out infinite; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useRef } = React;
+
+    // ── Templates ──────────────────────────────────────────────────────────────
+    const TEMPLATES = [
+      {
+        id: 1, nome: "Agradecimento",
+        texto: "Olá, {nome}! 🌸 Obrigada pela sua compra na Mora Fashion! Seu pedido foi registrado com sucesso. Qualquer dúvida, é só chamar aqui. Te esperamos de volta! 💕",
+      },
+      {
+        id: 2, nome: "Promoção",
+        texto: "Oi, {nome}! 🎉 Temos novidades incríveis na Mora Fashion! Novas peças acabaram de chegar com condições especiais. Venha conferir! 🛍️",
+      },
+      {
+        id: 3, nome: "Aniversário",
+        texto: "Feliz aniversário, {nome}! 🎂 A Mora Fashion tem um presentinho especial pra você! Venha buscar seu desconto de aniversário. Com carinho! 💕",
+      },
+      {
+        id: 4, nome: "Pós-venda",
+        texto: "Olá, {nome}! 😊 Tudo certo com sua compra na Mora Fashion? Adoraríamos saber o que você achou. Qualquer coisa, estamos aqui! 🌸",
+      },
+    ];
+
+    // ── API helpers ────────────────────────────────────────────────────────────
+    const api = {
+      get: (url) => fetch(url).then(r => r.json()),
+      post: (url, body) => fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then(r => r.json()),
+    };
+
+    const formatMoney = (v) => `R$ ${parseFloat(v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`;
+    const formatPhone = (r = "") => r.replace(/\D/g, "").replace(/^(\d{2})(\d{5})(\d{4})$/, "($1) $2-$3") || r;
+
+    // ── Componentes base ───────────────────────────────────────────────────────
+    const Badge = ({ ok, label }) => (
+      <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium ${
+        ok ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"
+      }`}>
+        {ok ? "✓" : "✗"} {label || (ok ? "Enviado" : "Erro")}
+      </span>
+    );
+
+    const Input = ({ label, ...props }) => (
+      <div>
+        {label && <label className="text-zinc-400 text-xs mb-1 block">{label}</label>}
+        <input
+          {...props}
+          className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2.5 text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-[#25D366] transition-colors"
+        />
+      </div>
+    );
+
+    const Btn = ({ children, variant = "primary", loading, disabled, ...props }) => {
+      const base = "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+      const styles = {
+        primary: "bg-[#25D366] hover:bg-[#22c55e] text-black",
+        secondary: "bg-zinc-800 hover:bg-zinc-700 text-zinc-200",
+        danger: "bg-rose-600 hover:bg-rose-700 text-white",
+      };
+      return (
+        <button {...props} disabled={disabled || loading} className={`${base} ${styles[variant]}`}>
+          {loading && <span className="pulse-dot w-2 h-2 bg-current rounded-full" />}
+          {children}
+        </button>
+      );
+    };
+
+    // ── Aba Pedidos ────────────────────────────────────────────────────────────
+    function AbaPerdiods() {
+      const [pedidos, setPedidos] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [erro, setErro] = useState(null);
+      const [expandido, setExpandido] = useState(null);
+      const [msgs, setMsgs] = useState({});
+      const [sending, setSending] = useState({});
+      const [results, setResults] = useState({});
+
+      const carregar = async () => {
+        setLoading(true); setErro(null);
+        try {
+          const d = await api.get("/api/pedidos?limite=40");
+          const lista = d?.data || d || [];
+          setPedidos(Array.isArray(lista) ? lista : []);
+        } catch { setErro("Não foi possível carregar os pedidos."); }
+        setLoading(false);
+      };
+
+      const toggleExpand = (id, nomeCliente) => {
+        setExpandido(prev => prev === id ? null : id);
+        if (!msgs[id]) {
+          const nome = nomeCliente?.split(" ")[0] || "cliente";
+          setMsgs(prev => ({ ...prev, [id]: TEMPLATES[0].texto.replace("{nome}", nome) }));
+        }
+      };
+
+      const enviar = async (pedido) => {
+        const phone = pedido.cliente_fone || pedido.cliente_celular || pedido.fone || pedido.celular;
+        if (!phone) { setResults(p => ({ ...p, [pedido.id]: { ok: false, msg: "Sem telefone" } })); return; }
+        setSending(p => ({ ...p, [pedido.id]: true }));
+        const r = await api.post("/api/enviar", { phone, message: msgs[pedido.id] });
+        setSending(p => ({ ...p, [pedido.id]: false }));
+        setResults(p => ({ ...p, [pedido.id]: { ok: r.ok, msg: r.ok ? "Enviado!" : r.error || "Erro" } }));
+        setTimeout(() => setResults(p => { const n = {...p}; delete n[pedido.id]; return n; }), 4000);
+      };
+
+      return (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-white font-bold text-lg">Pedidos Recentes</h2>
+              <p className="text-zinc-400 text-sm">Últimos 40 pedidos — clique para enviar mensagem</p>
+            </div>
+            <Btn variant="secondary" onClick={carregar} loading={loading}>
+              ↺ Atualizar
+            </Btn>
+          </div>
+
+          {erro && <div className="bg-rose-500/10 border border-rose-500/30 rounded-xl p-4 text-rose-400 text-sm">⚠️ {erro}</div>}
+
+          {!loading && pedidos.length === 0 && !erro && (
+            <div className="text-center py-20 text-zinc-500">
+              <div className="text-5xl mb-3">📦</div>
+              <p>Clique em "Atualizar" para carregar os pedidos</p>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {pedidos.map(p => {
+              const isOpen = expandido === p.id;
+              const nome = p.cliente_nome || p.nome || "—";
+              const primeiroNome = nome.split(" ")[0];
+              return (
+                <div key={p.id} className="bg-[#18181B] border border-zinc-800 rounded-xl overflow-hidden hover:border-zinc-700 transition-colors">
+                  <button
+                    onClick={() => toggleExpand(p.id, nome)}
+                    className="w-full text-left px-4 py-3 flex items-center justify-between gap-3"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-white font-medium text-sm">{nome}</span>
+                        {results[p.id] && <Badge ok={results[p.id].ok} label={results[p.id].msg} />}
+                      </div>
+                      <div className="text-zinc-400 text-xs mt-0.5 flex gap-3 flex-wrap">
+                        <span>📱 {formatPhone(p.cliente_fone || p.cliente_celular || "sem tel.")}</span>
+                        <span>📦 #{p.id}</span>
+                        <span className="text-[#25D366] font-semibold">{formatMoney(p.valor_total)}</span>
+                        <span>{p.data_emissao || ""}</span>
+                      </div>
+                    </div>
+                    <span className="text-zinc-500 text-xs shrink-0">{isOpen ? "▲" : "▼"}</span>
+                  </button>
+
+                  {isOpen && (
+                    <div className="border-t border-zinc-800 px-4 py-3 space-y-3 bg-zinc-900/50">
+                      <div className="flex gap-1.5 flex-wrap">
+                        {TEMPLATES.map(t => (
+                          <button key={t.id}
+                            onClick={() => setMsgs(prev => ({...prev, [p.id]: t.texto.replace("{nome}", primeiroNome)}))}
+                            className="text-xs px-2.5 py-1 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 transition-colors">
+                            {t.nome}
+                          </button>
+                        ))}
+                      </div>
+                      <textarea
+                        value={msgs[p.id] || ""}
+                        onChange={e => setMsgs(prev => ({...prev, [p.id]: e.target.value}))}
+                        rows={3}
+                        className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm resize-none focus:outline-none focus:border-[#25D366]"
+                      />
+                      <Btn onClick={() => enviar(p)} loading={sending[p.id]}>
+                        📤 Enviar WhatsApp para {primeiroNome}
+                      </Btn>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    // ── Aba Clientes ───────────────────────────────────────────────────────────
+    function AbaClientes() {
+      const [query, setQuery] = useState("");
+      const [clientes, setClientes] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [selecionado, setSelecionado] = useState(null);
+      const [pedidos, setPedidos] = useState([]);
+      const [msg, setMsg] = useState(TEMPLATES[0].texto);
+      const [enviando, setEnviando] = useState(false);
+      const [resultado, setResultado] = useState(null);
+
+      const buscar = async () => {
+        if (!query.trim()) return;
+        setLoading(true); setClientes([]); setSelecionado(null);
+        try {
+          const d = await api.get(`/api/clientes?nome=${encodeURIComponent(query)}&limite=20`);
+          setClientes(Array.isArray(d?.data) ? d.data : Array.isArray(d) ? d : []);
+        } catch { setClientes([]); }
+        setLoading(false);
+      };
+
+      const selecionar = async (c) => {
+        setSelecionado(c);
+        setMsg(TEMPLATES[0].texto.replace("{nome}", c.nome?.split(" ")[0] || "cliente"));
+        try {
+          const d = await api.get(`/api/clientes/${c.id}/pedidos`);
+          setPedidos(Array.isArray(d?.data) ? d.data : Array.isArray(d) ? d : []);
+        } catch { setPedidos([]); }
+      };
+
+      const enviar = async () => {
+        const phone = selecionado?.celular || selecionado?.fone || "";
+        if (!phone) { setResultado({ ok: false, msg: "Cliente sem telefone cadastrado" }); return; }
+        setEnviando(true);
+        const r = await api.post("/api/enviar", { phone, message: msg });
+        setEnviando(false);
+        setResultado({ ok: r.ok, msg: r.ok ? "Mensagem enviada!" : r.error || "Erro ao enviar" });
+        setTimeout(() => setResultado(null), 5000);
+      };
+
+      const totalGasto = pedidos.reduce((acc, p) => acc + parseFloat(p.valor_total || 0), 0);
+
+      return (
+        <div className="space-y-4">
+          <div>
+            <h2 className="text-white font-bold text-lg">Buscar Cliente</h2>
+            <p className="text-zinc-400 text-sm">Veja o histórico e envie mensagem personalizada</p>
+          </div>
+
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && buscar()}
+              placeholder="Nome do cliente..."
+              className="flex-1 bg-zinc-900 border border-zinc-700 rounded-lg px-4 py-2.5 text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-[#25D366]"
+            />
+            <Btn onClick={buscar} loading={loading}>Buscar</Btn>
+          </div>
+
+          {clientes.length > 0 && !selecionado && (
+            <div className="space-y-2">
+              {clientes.map(c => (
+                <button key={c.id} onClick={() => selecionar(c)}
+                  className="w-full text-left bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-xl p-3.5 transition-colors">
+                  <p className="text-white font-medium text-sm">{c.nome}</p>
+                  <p className="text-zinc-400 text-xs mt-0.5">
+                    {formatPhone(c.celular || c.fone || "sem telefone")}
+                    {c.email ? ` · ${c.email}` : ""}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {selecionado && (
+            <div className="space-y-3">
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+                <div className="flex items-start justify-between mb-3">
+                  <div>
+                    <p className="text-white font-bold text-base">{selecionado.nome}</p>
+                    <p className="text-zinc-400 text-sm">📱 {formatPhone(selecionado.celular || selecionado.fone || "sem tel.")}</p>
+                    {selecionado.email && <p className="text-zinc-400 text-sm">✉️ {selecionado.email}</p>}
+                  </div>
+                  <button onClick={() => { setSelecionado(null); setClientes([]); }} className="text-zinc-500 hover:text-zinc-300 text-xs">← Voltar</button>
+                </div>
+
+                {pedidos.length > 0 && (
+                  <div className="mb-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-zinc-400 text-xs font-semibold uppercase tracking-wider">Histórico de Compras</p>
+                      <p className="text-[#25D366] text-xs font-bold">Total: {formatMoney(totalGasto)}</p>
+                    </div>
+                    <div className="space-y-1.5 max-h-40 overflow-y-auto scrollbar-thin">
+                      {pedidos.map(p => (
+                        <div key={p.id} className="flex justify-between items-center text-xs bg-zinc-800 rounded-lg px-3 py-2">
+                          <span className="text-zinc-300">Pedido #{p.id} <span className="text-zinc-500">{p.data_emissao}</span></span>
+                          <span className="font-bold text-[#25D366]">{formatMoney(p.valor_total)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  <p className="text-zinc-400 text-xs font-semibold uppercase tracking-wider">Mensagem</p>
+                  <div className="flex gap-1.5 flex-wrap">
+                    {TEMPLATES.map(t => (
+                      <button key={t.id}
+                        onClick={() => setMsg(t.texto.replace("{nome}", selecionado.nome?.split(" ")[0]))}
+                        className="text-xs px-2.5 py-1 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 transition-colors">
+                        {t.nome}
+                      </button>
+                    ))}
+                  </div>
+                  <textarea value={msg} onChange={e => setMsg(e.target.value)} rows={3}
+                    className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm resize-none focus:outline-none focus:border-[#25D366]" />
+                  {resultado && (
+                    <p className={`text-xs ${resultado.ok ? "text-emerald-400" : "text-rose-400"}`}>
+                      {resultado.ok ? "✓" : "✗"} {resultado.msg}
+                    </p>
+                  )}
+                  <Btn onClick={enviar} loading={enviando}>
+                    📤 Enviar WhatsApp
+                  </Btn>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ── Aba Campanhas ──────────────────────────────────────────────────────────
+    function AbaCampanhas() {
+      const [template, setTemplate] = useState(TEMPLATES[1].texto);
+      const [lista, setLista] = useState("");
+      const [enviando, setEnviando] = useState(false);
+      const [log, setLog] = useState([]);
+      const [progresso, setProgresso] = useState(null);
+      const [intervalo, setIntervalo] = useState(3);
+      const logRef = useRef(null);
+
+      useEffect(() => {
+        if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+      }, [log]);
+
+      const contatos = lista.split("\n").map(l => {
+        const [phone, nome = "cliente"] = l.trim().split(",").map(x => x.trim());
+        return phone ? { phone, nome } : null;
+      }).filter(Boolean);
+
+      const disparar = async () => {
+        if (!contatos.length || !template) return;
+        setEnviando(true); setLog([]);
+        setProgresso({ atual: 0, total: contatos.length });
+
+        const eventSource = new EventSource("/api/campanha-sse?" + new URLSearchParams({
+          mensagem: template,
+          intervalo: intervalo * 1000,
+        }));
+
+        // Fallback: usar fetch com body via POST e SSE
+        const response = await fetch("/api/campanha", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contatos, mensagem: template, intervalo: intervalo * 1000 }),
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            try {
+              const evt = JSON.parse(line.slice(6));
+              if (evt.tipo === "progresso") {
+                setProgresso({ atual: evt.i, total: evt.total });
+                setLog(prev => [...prev, { phone: evt.phone, nome: evt.nome, ok: evt.ok, erro: evt.erro }]);
+              }
+            } catch {}
+          }
+        }
+
+        setProgresso(null);
+        setEnviando(false);
+      };
+
+      const enviados = log.filter(l => l.ok).length;
+      const erros = log.filter(l => !l.ok).length;
+
+      return (
+        <div className="space-y-4">
+          <div>
+            <h2 className="text-white font-bold text-lg">Campanhas em Massa</h2>
+            <p className="text-zinc-400 text-sm">Dispare mensagens para múltiplos clientes simultaneamente</p>
+          </div>
+
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 text-amber-300 text-xs space-y-1">
+            <p>⚠️ <strong>Atenção:</strong> Use com responsabilidade. O intervalo entre envios reduz o risco de bloqueio no WhatsApp.</p>
+            <p>💡 Recomendado: máximo 150 contatos por campanha.</p>
+          </div>
+
+          <div className="space-y-3">
+            <div>
+              <label className="text-zinc-400 text-xs mb-2 block font-medium">Template da mensagem <span className="text-zinc-500">(use {"{nome}"} para personalizar)</span></label>
+              <div className="flex gap-1.5 flex-wrap mb-2">
+                {TEMPLATES.map(t => (
+                  <button key={t.id} onClick={() => setTemplate(t.texto)}
+                    className="text-xs px-2.5 py-1 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 transition-colors">
+                    {t.nome}
+                  </button>
+                ))}
+              </div>
+              <textarea value={template} onChange={e => setTemplate(e.target.value)} rows={4}
+                className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm resize-none focus:outline-none focus:border-[#25D366]" />
+            </div>
+
+            <div className="flex items-center gap-3">
+              <label className="text-zinc-400 text-xs shrink-0">Intervalo entre envios:</label>
+              <input type="range" min="2" max="10" value={intervalo} onChange={e => setIntervalo(Number(e.target.value))}
+                className="flex-1 accent-[#25D366]" />
+              <span className="text-[#25D366] text-sm font-bold w-12 shrink-0">{intervalo}s</span>
+            </div>
+
+            <div>
+              <label className="text-zinc-400 text-xs mb-2 block font-medium">
+                Lista de contatos <span className="text-zinc-500">— um por linha: número, Nome (nome é opcional)</span>
+              </label>
+              <textarea value={lista} onChange={e => setLista(e.target.value)} rows={7}
+                placeholder={"11987654321, Maria\n11976543210, Ana\n11965432109, Fernanda\n11954321098"}
+                className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm font-mono resize-none focus:outline-none focus:border-[#25D366] placeholder-zinc-600" />
+              <p className="text-zinc-500 text-xs mt-1">{contatos.length} contato(s) na lista</p>
+            </div>
+
+            {progresso && (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2 text-zinc-300 text-sm">
+                    <span className="pulse-dot inline-block w-2 h-2 bg-[#25D366] rounded-full" />
+                    Enviando... {progresso.atual}/{progresso.total}
+                  </div>
+                </div>
+                <div className="w-full bg-zinc-800 rounded-full h-1.5">
+                  <div className="bg-[#25D366] h-1.5 rounded-full transition-all"
+                    style={{ width: `${(progresso.atual / progresso.total) * 100}%` }} />
+                </div>
+              </div>
+            )}
+
+            {log.length > 0 && (
+              <div>
+                <div className="flex items-center gap-3 mb-2">
+                  <p className="text-zinc-400 text-xs font-semibold uppercase">Log de envios</p>
+                  <Badge ok label={`${enviados} enviado${enviados !== 1 ? "s" : ""}`} />
+                  {erros > 0 && <Badge ok={false} label={`${erros} erro${erros !== 1 ? "s" : ""}`} />}
+                </div>
+                <div ref={logRef} className="bg-zinc-900 rounded-xl p-3 space-y-1.5 max-h-48 overflow-y-auto scrollbar-thin">
+                  {log.map((l, i) => (
+                    <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-zinc-800 last:border-0">
+                      <span className="text-zinc-300">{l.nome} <span className="text-zinc-500">{l.phone}</span></span>
+                      <span className={l.ok ? "text-emerald-400" : "text-rose-400"}>
+                        {l.ok ? "✓ Enviado" : `✗ ${l.erro || "Erro"}`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <Btn onClick={disparar} disabled={enviando || !contatos.length || !template} loading={enviando}>
+              {enviando ? `Enviando campanha... (${progresso?.atual || 0}/${progresso?.total || 0})` : `🚀 Disparar Campanha para ${contatos.length} contato(s)`}
+            </Btn>
+          </div>
+        </div>
+      );
+    }
+
+    // ── App Principal ──────────────────────────────────────────────────────────
+    function App() {
+      const [tab, setTab] = useState("pedidos");
+      const [status, setStatus] = useState(null);
+
+      useEffect(() => {
+        api.get("/api/status").then(setStatus).catch(() => {});
+      }, []);
+
+      const tabs = [
+        { id: "pedidos",   label: "📦 Pedidos"   },
+        { id: "clientes",  label: "👥 Clientes"  },
+        { id: "campanhas", label: "📣 Campanhas" },
+      ];
+
+      return (
+        <div className="min-h-screen bg-[#0D0D0F] text-white">
+          {/* Header */}
+          <div className="border-b border-zinc-800 bg-[#111113] sticky top-0 z-10">
+            <div className="max-w-2xl mx-auto px-4">
+              <div className="flex items-center justify-between py-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-[#25D366] flex items-center justify-center text-black font-black text-sm">M</div>
+                  <div>
+                    <p className="text-white font-bold text-sm leading-none">Mora Fashion</p>
+                    <p className="text-zinc-500 text-xs">Painel WhatsApp</p>
+                  </div>
+                </div>
+                {status && (
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${status.gc ? "bg-emerald-400" : "bg-rose-500"}`} title={`Gestão Click: ${status.gc ? "OK" : "ERRO"}`} />
+                    <span className={`w-2 h-2 rounded-full ${status.zapi ? "bg-emerald-400" : "bg-rose-500"}`} title={`Z-API: ${status.zapi ? "OK" : "ERRO"}`} />
+                  </div>
+                )}
+              </div>
+              <div className="flex gap-1 pb-0">
+                {tabs.map(t => (
+                  <button
+                    key={t.id}
+                    onClick={() => setTab(t.id)}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                      tab === t.id
+                        ? "border-[#25D366] text-[#25D366]"
+                        : "border-transparent text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Alerta de configuração */}
+          {status && (!status.gc || !status.zapi) && (
+            <div className="max-w-2xl mx-auto px-4 pt-4">
+              <div className="bg-rose-500/10 border border-rose-500/30 rounded-xl p-4 text-rose-300 text-sm">
+                ⚠️ <strong>Configuração incompleta.</strong> Verifique as variáveis de ambiente no Replit:
+                {!status.gc && " GC_ACCESS_TOKEN, GC_SECRET_TOKEN"}
+                {!status.zapi && " ZAPI_INSTANCE, ZAPI_TOKEN"}
+              </div>
+            </div>
+          )}
+
+          {/* Content */}
+          <div className="max-w-2xl mx-auto px-4 py-6">
+            {tab === "pedidos"   && <AbaPerdiods />}
+            {tab === "clientes"  && <AbaClientes />}
+            {tab === "campanhas" && <AbaCampanhas />}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
