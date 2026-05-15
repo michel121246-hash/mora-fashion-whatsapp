@@ -5,7 +5,7 @@ const path = require("path");
 
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(__dirname));
 
 // ─── Variáveis de ambiente ────────────────────────────────────────────────────
 const GC_ACCESS   = process.env.GC_ACCESS_TOKEN;
@@ -163,7 +163,7 @@ app.post("/api/campanha", async (req, res) => {
 
 // ─── Fallback: serve o index.html para todas as rotas não-API ─────────────────
 app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+  res.sendFile(path.join(__dirname, "index.html"));
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
