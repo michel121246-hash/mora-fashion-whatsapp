@@ -44,7 +44,7 @@ app.get("/api/pedidos", async (req, res) => {
   try {
     const r = await axios.get(`${GC_BASE}/vendas`, {
       headers: gcHeaders(),
-      params: { limite: 40, ordenar_por: "data", ordem: "desc", ...req.query },
+      params: { limite: 40, ordenar_por: "data", ordem: "desc", tipo: "vendas_balcao", ...req.query },
     });
     res.json(r.data);
   } catch (e) {
