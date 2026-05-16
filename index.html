@@ -67,6 +67,7 @@ const Avatar = ({ name, size = 9 }) => (
 // ABA: PEDIDOS
 // ══════════════════════════════════════════════════════════════════════════════
 function AbaPedidos() {
+  const hoje = new Date().toISOString().slice(0,10);
   const [pedidos, setPedidos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [erro, setErro] = useState(null);
@@ -74,15 +75,31 @@ function AbaPedidos() {
   const [msgs, setMsgs] = useState({});
   const [sending, setSending] = useState({});
   const [results, setResults] = useState({});
+  const [dataInicio, setDataInicio] = useState(hoje);
+  const [dataFim, setDataFim] = useState(hoje);
+  const [countdown, setCountdown] = useState(20);
+  const timerRef = useRef(null);
+  const countRef = useRef(null);
 
-  const carregar = async () => {
-    setLoading(true); setErro(null);
+  const carregar = useCallback(async (inicio, fim) => {
+    setLoading(true); setErro(null); setCountdown(20);
     try {
-      const d = await api.get("/api/pedidos?limite=40");
+      let url = "/api/pedidos?limite=40";
+      if (inicio) url += `&data_inicio=${inicio}`;
+      if (fim)    url += `&data_fim=${fim}`;
+      const d = await api.get(url);
       setPedidos(Array.isArray(d?.data) ? d.data : Array.isArray(d) ? d : []);
     } catch { setErro("Não foi possível carregar os pedidos."); }
     setLoading(false);
-  };
+  }, []);
+
+  // Auto-refresh a cada 20s
+  useEffect(() => {
+    carregar(dataInicio, dataFim);
+    timerRef.current = setInterval(() => carregar(dataInicio, dataFim), 20000);
+    countRef.current = setInterval(() => setCountdown(c => c <= 1 ? 20 : c - 1), 1000);
+    return () => { clearInterval(timerRef.current); clearInterval(countRef.current); };
+  }, [dataInicio, dataFim]);
 
   const toggleExpand = (id, nomeCliente) => {
     setExpandido(p => p === id ? null : id);
@@ -101,16 +118,56 @@ function AbaPedidos() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div><h2 className="text-white font-bold text-lg">Pedidos Recentes</h2><p className="text-zinc-400 text-sm">Últimos 40 pedidos</p></div>
-        <button onClick={carregar} disabled={loading} className="flex items-center gap-2 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm">
-          <span className={loading?"spin inline-block":""}>↺</span> Atualizar
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h2 className="text-white font-bold text-lg">Pedidos Recentes</h2>
+          <p className="text-zinc-500 text-xs">Atualização automática em <span className="text-[#25D366] font-bold">{countdown}s</span></p>
+        </div>
+        <button onClick={() => carregar(dataInicio, dataFim)} disabled={loading}
+          className="flex items-center gap-2 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm">
+          <span className={loading?"spin inline-block":""}>↺</span> Atualizar agora
         </button>
       </div>
+
+      {/* Filtro de data */}
+      <div className="flex items-center gap-2 flex-wrap bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+        <span className="text-zinc-400 text-xs font-medium">📅 Filtrar por data:</span>
+        <div className="flex items-center gap-2 flex-wrap flex-1">
+          <div className="flex items-center gap-1.5">
+            <label className="text-zinc-500 text-xs">De:</label>
+            <input type="date" value={dataInicio} onChange={e=>setDataInicio(e.target.value)}
+              className="bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1 text-white text-xs focus:outline-none focus:border-[#25D366]" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <label className="text-zinc-500 text-xs">Até:</label>
+            <input type="date" value={dataFim} onChange={e=>setDataFim(e.target.value)}
+              className="bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1 text-white text-xs focus:outline-none focus:border-[#25D366]" />
+          </div>
+          <div className="flex gap-1.5">
+            {[["Hoje", hoje, hoje],["7 dias", new Date(Date.now()-6*864e5).toISOString().slice(0,10), hoje],["30 dias", new Date(Date.now()-29*864e5).toISOString().slice(0,10), hoje]].map(([l,i,f])=>(
+              <button key={l} onClick={()=>{setDataInicio(i);setDataFim(f);}}
+                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${dataInicio===i&&dataFim===f?"bg-[#25D366]/20 border-[#25D366] text-[#25D366]":"bg-zinc-800 border-zinc-700 text-zinc-400 hover:text-zinc-200"}`}>
+                {l}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
       {erro && <div className="bg-rose-500/10 border border-rose-500/30 rounded-xl p-4 text-rose-400 text-sm">⚠️ {erro}</div>}
-      {!loading && !pedidos.length && !erro && (
-        <div className="text-center py-20 text-zinc-500"><div className="text-5xl mb-3">📦</div><p>Clique em "Atualizar" para carregar</p></div>
+
+      {loading && !pedidos.length && (
+        <div className="text-center py-16 text-zinc-500"><span className="spin inline-block text-2xl">↺</span><p className="mt-2 text-sm">Carregando pedidos...</p></div>
       )}
+      {!loading && !pedidos.length && !erro && (
+        <div className="text-center py-16 text-zinc-500"><div className="text-4xl mb-2">📦</div><p className="text-sm">Nenhum pedido no período selecionado</p></div>
+      )}
+
+      {pedidos.length > 0 && (
+        <p className="text-zinc-500 text-xs">{pedidos.length} pedido(s) encontrado(s)</p>
+      )}
+
       <div className="space-y-2">
         {pedidos.map(p => {
           const nome = p.nome_cliente || p.cliente_nome || "—";
@@ -127,6 +184,7 @@ function AbaPedidos() {
                     <span>📦 #{p.id}</span>
                     <span className="text-[#25D366] font-semibold">{money(p.valor_total)}</span>
                     <span>{p.data || ""}</span>
+                    {p.nome_vendedor && <span>👤 {p.nome_vendedor}</span>}
                   </div>
                 </div>
                 <span className="text-zinc-500 text-xs shrink-0">{isOpen?"▲":"▼"}</span>
@@ -159,24 +217,33 @@ function AbaPedidos() {
 // ABA: CLIENTES
 // ══════════════════════════════════════════════════════════════════════════════
 function AbaClientes() {
-  const [query, setQuery] = useState("");
-  const [clientes, setClientes] = useState([]);
+  const [todos, setTodos] = useState([]);
+  const [filtro, setFiltro] = useState("");
   const [loading, setLoading] = useState(false);
+  const [countdown, setCountdown] = useState(20);
   const [sel, setSel] = useState(null);
   const [pedidos, setPedidos] = useState([]);
   const [msg, setMsg] = useState(TEMPLATES[0].texto);
   const [enviando, setEnviando] = useState(false);
   const [resultado, setResultado] = useState(null);
+  const timerRef = useRef(null);
+  const countRef = useRef(null);
 
-  const buscar = async () => {
-    if (!query.trim()) return;
-    setLoading(true); setClientes([]); setSel(null);
+  const carregar = useCallback(async () => {
+    setLoading(true); setCountdown(20);
     try {
-      const d = await api.get(`/api/clientes?nome=${encodeURIComponent(query)}&limite=20`);
-      setClientes(Array.isArray(d?.data)?d.data:Array.isArray(d)?d:[]);
-    } catch { setClientes([]); }
+      const d = await api.get("/api/clientes?limite=100&situacao=1");
+      setTodos(Array.isArray(d?.data)?d.data:Array.isArray(d)?d:[]);
+    } catch { setTodos([]); }
     setLoading(false);
-  };
+  }, []);
+
+  useEffect(() => {
+    carregar();
+    timerRef.current = setInterval(carregar, 20000);
+    countRef.current = setInterval(() => setCountdown(c => c <= 1 ? 20 : c - 1), 1000);
+    return () => { clearInterval(timerRef.current); clearInterval(countRef.current); };
+  }, []);
 
   const selecionar = async (c) => {
     setSel(c); setMsg(TEMPLATES[0].texto.replace("{nome}", c.nome?.split(" ")[0]||"cliente"));
@@ -194,48 +261,95 @@ function AbaClientes() {
     setTimeout(()=>setResultado(null),5000);
   };
 
+  const clientes = todos.filter(c => {
+    if (!filtro.trim()) return true;
+    const q = filtro.toLowerCase();
+    return (c.nome||"").toLowerCase().includes(q) || (c.celular||c.fone||"").includes(filtro);
+  });
+
+  if (sel) return (
+    <div className="space-y-4">
+      <button onClick={()=>setSel(null)} className="flex items-center gap-2 text-zinc-400 hover:text-white text-sm transition-colors">← Voltar à lista</button>
+      <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 space-y-4">
+        <div className="flex items-center gap-3">
+          <Avatar name={sel.nome} size={12} />
+          <div>
+            <p className="text-white font-bold text-base">{sel.nome}</p>
+            <p className="text-zinc-400 text-sm">📱 {fmtPhone(sel.celular||sel.fone||"sem telefone")}</p>
+            {sel.email && <p className="text-zinc-400 text-sm">✉️ {sel.email}</p>}
+          </div>
+        </div>
+        {pedidos.length>0 && (
+          <div>
+            <p className="text-zinc-400 text-xs font-semibold uppercase mb-2">Histórico de Compras</p>
+            <div className="space-y-1.5 max-h-48 overflow-y-auto">
+              {pedidos.map(p=>(
+                <div key={p.id} className="flex justify-between text-xs bg-zinc-800 rounded-lg px-3 py-2">
+                  <span className="text-zinc-300">#{p.id} <span className="text-zinc-500">{p.data}</span></span>
+                  <span className="text-[#25D366] font-bold">{money(p.valor_total)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {pedidos.length===0 && <p className="text-zinc-500 text-sm">Nenhuma compra encontrada.</p>}
+        <div className="space-y-2">
+          <p className="text-zinc-400 text-xs font-semibold uppercase">Enviar Mensagem</p>
+          <div className="flex gap-1.5 flex-wrap">{TEMPLATES.map(t=><button key={t.id} onClick={()=>setMsg(t.texto.replace("{nome}",sel.nome?.split(" ")[0]))} className="text-xs px-2.5 py-1 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700">{t.nome}</button>)}</div>
+          <textarea value={msg} onChange={e=>setMsg(e.target.value)} rows={3} className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm resize-none focus:outline-none focus:border-[#25D366]" />
+          {resultado&&<p className={`text-xs ${resultado.ok?"text-emerald-400":"text-rose-400"}`}>{resultado.ok?"✓":"✗"} {resultado.msg}</p>}
+          <button onClick={enviar} disabled={enviando} className="flex items-center gap-2 px-4 py-2 bg-[#25D366] hover:bg-[#22c55e] disabled:bg-zinc-700 text-black font-bold rounded-lg text-sm">
+            📤 {enviando?"Enviando...":"Enviar WhatsApp"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <div className="space-y-4">
-      <div><h2 className="text-white font-bold text-lg">Buscar Cliente</h2></div>
-      <div className="flex gap-2">
-        <input type="text" value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>e.key==="Enter"&&buscar()} placeholder="Nome do cliente..."
-          className="flex-1 bg-zinc-900 border border-zinc-700 rounded-lg px-4 py-2.5 text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-[#25D366]" />
-        <button onClick={buscar} disabled={loading} className="px-5 py-2.5 bg-[#25D366] hover:bg-[#22c55e] text-black font-bold rounded-lg text-sm">{loading?"...":"Buscar"}</button>
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h2 className="text-white font-bold text-lg">Clientes</h2>
+          <p className="text-zinc-500 text-xs">Atualização automática em <span className="text-[#25D366] font-bold">{countdown}s</span></p>
+        </div>
+        <button onClick={carregar} disabled={loading} className="flex items-center gap-2 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm">
+          <span className={loading?"spin inline-block":""}>↺</span> Atualizar agora
+        </button>
       </div>
-      {clientes.length>0 && !sel && (
-        <div className="space-y-2">
-          {clientes.map(c=>(
-            <button key={c.id} onClick={()=>selecionar(c)} className="w-full text-left bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-xl p-3.5 transition-colors">
-              <p className="text-white font-medium text-sm">{c.nome}</p>
-              <p className="text-zinc-400 text-xs mt-0.5">{fmtPhone(c.celular||c.fone||"sem telefone")}{c.email?` · ${c.email}`:""}</p>
-            </button>
-          ))}
-        </div>
+
+      {/* Filtro */}
+      <input type="text" value={filtro} onChange={e=>setFiltro(e.target.value)} placeholder="🔍  Filtrar por nome ou telefone..."
+        className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-[#25D366]" />
+
+      {loading && !todos.length && (
+        <div className="text-center py-16 text-zinc-500"><span className="spin inline-block text-2xl">↺</span><p className="mt-2 text-sm">Carregando clientes...</p></div>
       )}
-      {sel && (
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 space-y-4">
-          <div className="flex justify-between"><div><p className="text-white font-bold">{sel.nome}</p><p className="text-zinc-400 text-sm">📱 {fmtPhone(sel.celular||sel.fone)}</p></div>
-            <button onClick={()=>{setSel(null);setClientes([]);}} className="text-zinc-500 hover:text-zinc-300 text-xs">← Voltar</button>
-          </div>
-          {pedidos.length>0&&(<div className="space-y-1.5 max-h-40 overflow-y-auto">
-            <p className="text-zinc-400 text-xs font-semibold uppercase mb-2">Histórico</p>
-            {pedidos.map(p=>(
-              <div key={p.id} className="flex justify-between text-xs bg-zinc-800 rounded-lg px-3 py-2">
-                <span className="text-zinc-300">#{p.id} <span className="text-zinc-500">{p.data}</span></span>
-                <span className="text-[#25D366] font-bold">{money(p.valor_total)}</span>
+      {!loading && !clientes.length && (
+        <div className="text-center py-16 text-zinc-500"><div className="text-4xl mb-2">👥</div><p className="text-sm">Nenhum cliente encontrado</p></div>
+      )}
+
+      {clientes.length > 0 && (
+        <p className="text-zinc-500 text-xs">{clientes.length} cliente(s){filtro ? " encontrado(s)" : " cadastrado(s)"}</p>
+      )}
+
+      <div className="space-y-2">
+        {clientes.map(c => (
+          <button key={c.id} onClick={()=>selecionar(c)}
+            className="w-full text-left bg-[#18181B] hover:bg-zinc-800 border border-zinc-800 rounded-xl p-3.5 transition-colors flex items-center gap-3">
+            <Avatar name={c.nome} size={9} />
+            <div className="flex-1 min-w-0">
+              <p className="text-white font-medium text-sm truncate">{c.nome}</p>
+              <div className="text-zinc-400 text-xs mt-0.5 flex gap-3 flex-wrap">
+                {(c.celular||c.fone) && <span>📱 {fmtPhone(c.celular||c.fone)}</span>}
+                {c.email && <span className="truncate">✉️ {c.email}</span>}
               </div>
-            ))}
-          </div>)}
-          <div className="space-y-2">
-            <div className="flex gap-1.5 flex-wrap">{TEMPLATES.map(t=><button key={t.id} onClick={()=>setMsg(t.texto.replace("{nome}",sel.nome?.split(" ")[0]))} className="text-xs px-2.5 py-1 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700">{t.nome}</button>)}</div>
-            <textarea value={msg} onChange={e=>setMsg(e.target.value)} rows={3} className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm resize-none focus:outline-none focus:border-[#25D366]" />
-            {resultado&&<p className={`text-xs ${resultado.ok?"text-emerald-400":"text-rose-400"}`}>{resultado.ok?"✓":"✗"} {resultado.msg}</p>}
-            <button onClick={enviar} disabled={enviando} className="flex items-center gap-2 px-4 py-2 bg-[#25D366] hover:bg-[#22c55e] disabled:bg-zinc-700 text-black font-bold rounded-lg text-sm">
-              📤 {enviando?"Enviando...":"Enviar WhatsApp"}
-            </button>
-          </div>
-        </div>
-      )}
+            </div>
+            <span className="text-zinc-600 text-xs shrink-0">→</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
