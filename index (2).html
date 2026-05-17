@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mora Fashion — Painel WhatsApp CRM</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0A0A0C; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #fff; }
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #333; border-radius: 9999px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { animation: spin 1s linear infinite; }
+    @keyframes fadein { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .fadein { animation: fadein 0.2s ease; }
+    .bubble-in { animation: fadein 0.15s ease; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ── API ───────────────────────────────────────────────────────────────────────
+const api = {
+  get: (u) => fetch(u).then(r => r.json()),
+  post: (u, b) => fetch(u, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(b) }).then(r => r.json()),
+};
+
+// ── Utils ─────────────────────────────────────────────────────────────────────
+const money = v => `R$ ${parseFloat(v||0).toLocaleString("pt-BR",{minimumFractionDigits:2})}`;
+const fmtTime = ts => {
+  if (!ts) return "";
+  const d = new Date(typeof ts === "number" && ts < 1e12 ? ts*1000 : ts);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
+  return d.toLocaleDateString("pt-BR",{day:"2-digit",month:"2-digit"});
+};
+const fmtPhone = r => String(r||"").replace(/\D/g,"").replace(/^55/,"").replace(/^(\d{2})(\d{5})(\d{4})$/,"($1) $2-$3") || r;
+const avatar = name => (name||"?")[0].toUpperCase();
+const avatarColor = name => { const colors=["#6366f1","#8b5cf6","#ec4899","#f59e0b","#10b981","#3b82f6","#ef4444"]; return colors[(name||"?").charCodeAt(0)%colors.length]; };
+
+// ── Templates ─────────────────────────────────────────────────────────────────
+const TEMPLATES = [
+  { id:1, nome:"Agradecimento", texto:"Olá, {nome}! 🌸 Obrigada pela sua compra na Mora Fashion! Qualquer dúvida, é só chamar. Te esperamos de volta! 💕" },
+  { id:2, nome:"Promoção",      texto:"Oi, {nome}! 🎉 Temos novidades incríveis na Mora Fashion! Novas peças com condições especiais. Venha conferir! 🛍️" },
+  { id:3, nome:"Aniversário",   texto:"Feliz aniversário, {nome}! 🎂 A Mora Fashion tem um presentinho especial pra você! 💕" },
+  { id:4, nome:"Pós-venda",     texto:"Olá, {nome}! 😊 Tudo certo com sua compra? Adoraríamos saber o que achou. Qualquer coisa estamos aqui! 🌸" },
+];
+
+// ══════════════════════════════════════════════════════════════════════════════
+// COMPONENTE: AVATAR
+// ══════════════════════════════════════════════════════════════════════════════
+const Avatar = ({ name, size = 9 }) => (
+  <div className={`w-${size} h-${size} rounded-full flex items-center justify-center text-white font-bold text-sm shrink-0`}
+    style={{ background: avatarColor(name) }}>
+    {avatar(name)}
+  </div>
+);
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ABA: PEDIDOS
+// ══════════════════════════════════════════════════════════════════════════════
+function AbaPedidos() {
+  const hoje = new Date().toISOString().slice(0,10);
+  const [pedidos, setPedidos] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [erro, setErro] = useState(null);
+  const [expandido, setExpandido] = useState(null);
+  const [msgs, setMsgs] = useState({});
+  const [sending, setSending] = useState({});
+  const [results, setResults] = useState({});
+  const [dataInicio, setDataInicio] = useState(hoje);
+  const [dataFim, setDataFim] = useState(hoje);
+  const [countdown, setCountdown] = useState(20);
+  const timerRef = useRef(null);
+  const countRef = useRef(null);
+
+  const carregar = useCallback(async (inicio, fim) => {
+    setLoading(true); setErro(null); setCountdown(20);
+    try {
+      let url = "/api/pedidos?limite=40";
+      if (inicio) url += `&data_inicio=${inicio}`;
+      if (fim)    url += `&data_fim=${fim}`;
+      const d = await api.get(url);
+      setPedidos(Array.isArray(d?.data) ? d.data : Array.isArray(d) ? d : []);
+    } catch { setErro("Não foi possível carregar os pedidos."); }
+    setLoading(false);
+  }, []);
+
+  // Auto-refresh a cada 20s
+  useEffect(() => {
+    carregar(dataInicio, dataFim);
+    timerRef.current = setInterval(() => carregar(dataInicio, dataFim), 20000);
+    countRef.current = setInterval(() => setCountdown(c => c <= 1 ? 20 : c - 1), 1000);
+    return () => { clearInterval(timerRef.current); clearInterval(countRef.current); };
+  }, [dataInicio, dataFim]);
+
+  const toggleExpand = (id, nomeCliente) => {
+    setExpandido(p => p === id ? null : id);
+    if (!msgs[id]) setMsgs(p => ({ ...p, [id]: TEMPLATES[0].texto.replace("{nome}", (nomeCliente||"cliente").split(" ")[0]) }));
+  };
+
+  const enviar = async (pedido) => {
+    const phone = pedido.cliente_fone || pedido.cliente_celular || pedido.fone || pedido.celular;
+    if (!phone) { setResults(p => ({...p, [pedido.id]:{ok:false,msg:"Sem telefone"}})); return; }
+    setSending(p => ({...p, [pedido.id]:true}));
+    const r = await api.post("/api/enviar", { phone, message: msgs[pedido.id], name: pedido.nome_cliente || pedido.cliente_nome });
+    setSending(p => ({...p, [pedido.id]:false}));
+    setResults(p => ({...p, [pedido.id]:{ok:r.ok, msg: r.ok?"Enviado!":r.error||"Erro"}}));
+    setTimeout(() => setResults(p => { const n={...p}; delete n[pedido.id]; return n; }), 4000);
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h2 className="text-white font-bold text-lg">Pedidos Recentes</h2>
+          <p className="text-zinc-500 text-xs">Atualização automática em <span className="text-[#25D366] font-bold">{countdown}s</span></p>
+        </div>
+        <button onClick={() => carregar(dataInicio, dataFim)} disabled={loading}
+          className="flex items-center gap-2 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm">
+          <span className={loading?"spin inline-block":""}>↺</span> Atualizar agora
+        </button>
+      </div>
+
+      {/* Filtro de data */}
+      <div className="flex items-center gap-2 flex-wrap bg-zinc-900 border border-zinc-800 rounded-xl p-3">
+        <span className="text-zinc-400 text-xs font-medium">📅 Filtrar por data:</span>
+        <div className="flex items-center gap-2 flex-wrap flex-1">
+          <div className="flex items-center gap-1.5">
+            <label className="text-zinc-500 text-xs">De:</label>
+            <input type="date" value={dataInicio} onChange={e=>setDataInicio(e.target.value)}
+              className="bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1 text-white text-xs focus:outline-none focus:border-[#25D366]" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <label className="text-zinc-500 text-xs">Até:</label>
+            <input type="date" value={dataFim} onChange={e=>setDataFim(e.target.value)}
+              className="bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1 text-white text-xs focus:outline-none focus:border-[#25D366]" />
+          </div>
+          <div className="flex gap-1.5">
+            {[["Hoje", hoje, hoje],["7 dias", new Date(Date.now()-6*864e5).toISOString().slice(0,10), hoje],["30 dias", new Date(Date.now()-29*864e5).toISOString().slice(0,10), hoje]].map(([l,i,f])=>(
+              <button key={l} onClick={()=>{setDataInicio(i);setDataFim(f);}}
+                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${dataInicio===i&&dataFim===f?"bg-[#25D366]/20 border-[#25D366] text-[#25D366]":"bg-zinc-800 border-zinc-700 text-zinc-400 hover:text-zinc-200"}`}>
+                {l}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {erro && <div className="bg-rose-500/10 border border-rose-500/30 rounded-xl p-4 text-rose-400 text-sm">⚠️ {erro}</div>}
+
+      {loading && !pedidos.length && (
+        <div className="text-center py-16 text-zinc-500"><span className="spin inline-block text-2xl">↺</span><p className="mt-2 text-sm">Carregando pedidos...</p></div>
+      )}
+      {!loading && !pedidos.length && !erro && (
+        <div className="text-center py-16 text-zinc-500"><div className="text-4xl mb-2">📦</div><p className="text-sm">Nenhum pedido no período selecionado</p></div>
+      )}
+
+      {pedidos.length > 0 && (
+        <p className="text-zinc-500 text-xs">{pedidos.length} pedido(s) encontrado(s)</p>
+      )}
+
+      <div className="space-y-2">
+        {pedidos.map(p => {
+          const nome = p.nome_cliente || p.cliente_nome || "—";
+          const isOpen = expandido === p.id;
+          return (
+            <div key={p.id} className="bg-[#18181B] border border-zinc-800 rounded-xl overflow-hidden hover:border-zinc-700 transition-colors">
+              <button onClick={() => toggleExpand(p.id, nome)} className="w-full text-left px-4 py-3 flex items-center justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-white font-medium text-sm">{nome}</span>
+                    {results[p.id] && <span className={`text-xs px-2 py-0.5 rounded-full ${results[p.id].ok?"bg-emerald-500/20 text-emerald-400":"bg-rose-500/20 text-rose-400"}`}>{results[p.id].ok?"✓":"✗"} {results[p.id].msg}</span>}
+                  </div>
+                  <div className="text-zinc-400 text-xs mt-0.5 flex gap-3 flex-wrap">
+                    <span>📦 #{p.id}</span>
+                    <span className="text-[#25D366] font-semibold">{money(p.valor_total)}</span>
+                    <span>{p.data || ""}</span>
+                    {p.nome_vendedor && <span>👤 {p.nome_vendedor}</span>}
+                  </div>
+                </div>
+                <span className="text-zinc-500 text-xs shrink-0">{isOpen?"▲":"▼"}</span>
+              </button>
+              {isOpen && (
+                <div className="border-t border-zinc-800 px-4 py-3 space-y-3 bg-zinc-900/50">
+                  <div className="flex gap-1.5 flex-wrap">
+                    {TEMPLATES.map(t => (
+                      <button key={t.id} onClick={() => setMsgs(prev=>({...prev,[p.id]:t.texto.replace("{nome}",nome.split(" ")[0])}))}
+                        className="text-xs px-2.5 py-1 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 transition-colors">{t.nome}</button>
+                    ))}
+                  </div>
+                  <textarea value={msgs[p.id]||""} onChange={e=>setMsgs(prev=>({...prev,[p.id]:e.target.value}))} rows={3}
+                    className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm resize-none focus:outline-none focus:border-[#25D366]" />
+                  <button onClick={()=>enviar(p)} disabled={sending[p.id]}
+                    className="flex items-center gap-2 px-4 py-2 bg-[#25D366] hover:bg-[#22c55e] disabled:bg-zinc-700 text-black font-bold rounded-lg text-sm">
+                    📤 {sending[p.id]?"Enviando...":"Enviar WhatsApp"}
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ABA: CLIENTES
+// ══════════════════════════════════════════════════════════════════════════════
+function AbaClientes() {
+  const [todos, setTodos] = useState([]);
+  const [filtro, setFiltro] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [countdown, setCountdown] = useState(20);
+  const [sel, setSel] = useState(null);
+  const [pedidos, setPedidos] = useState([]);
+  const [msg, setMsg] = useState(TEMPLATES[0].texto);
+  const [enviando, setEnviando] = useState(false);
+  const [resultado, setResultado] = useState(null);
+  const timerRef = useRef(null);
+  const countRef = useRef(null);
+
+  const carregar = useCallback(async () => {
+    setLoading(true); setCountdown(20);
+    try {
+      const d = await api.get("/api/clientes?limite=100&situacao=1");
+      setTodos(Array.isArray(d?.data)?d.data:Array.isArray(d)?d:[]);
+    } catch { setTodos([]); }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    carregar();
+    timerRef.current = setInterval(carregar, 20000);
+    countRef.current = setInterval(() => setCountdown(c => c <= 1 ? 20 : c - 1), 1000);
+    return () => { clearInterval(timerRef.current); clearInterval(countRef.current); };
+  }, []);
+
+  const selecionar = async (c) => {
+    setSel(c); setMsg(TEMPLATES[0].texto.replace("{nome}", c.nome?.split(" ")[0]||"cliente"));
+    try { const d = await api.get(`/api/clientes/${c.id}/pedidos`); setPedidos(Array.isArray(d?.data)?d.data:Array.isArray(d)?d:[]); }
+    catch { setPedidos([]); }
+  };
+
+  const enviar = async () => {
+    const phone = sel?.celular||sel?.fone||"";
+    if (!phone) { setResultado({ok:false,msg:"Sem telefone"}); return; }
+    setEnviando(true);
+    const r = await api.post("/api/enviar", { phone, message: msg, name: sel.nome });
+    setEnviando(false);
+    setResultado({ok:r.ok,msg:r.ok?"Enviado!":r.error||"Erro"});
+    setTimeout(()=>setResultado(null),5000);
+  };
+
+  const clientes = todos.filter(c => {
+    if (!filtro.trim()) return true;
+    const q = filtro.toLowerCase();
+    return (c.nome||"").toLowerCase().includes(q) || (c.celular||c.fone||"").includes(filtro);
+  });
+
+  if (sel) return (
+    <div className="space-y-4">
+      <button onClick={()=>setSel(null)} className="flex items-center gap-2 text-zinc-400 hover:text-white text-sm transition-colors">← Voltar à lista</button>
+      <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 space-y-4">
+        <div className="flex items-center gap-3">
+          <Avatar name={sel.nome} size={12} />
+          <div>
+            <p className="text-white font-bold text-base">{sel.nome}</p>
+            <p className="text-zinc-400 text-sm">📱 {fmtPhone(sel.celular||sel.fone||"sem telefone")}</p>
+            {sel.email && <p className="text-zinc-400 text-sm">✉️ {sel.email}</p>}
+          </div>
+        </div>
+        {pedidos.length>0 && (
+          <div>
+            <p className="text-zinc-400 text-xs font-semibold uppercase mb-2">Histórico de Compras</p>
+            <div className="space-y-1.5 max-h-48 overflow-y-auto">
+              {pedidos.map(p=>(
+                <div key={p.id} className="flex justify-between text-xs bg-zinc-800 rounded-lg px-3 py-2">
+                  <span className="text-zinc-300">#{p.id} <span className="text-zinc-500">{p.data}</span></span>
+                  <span className="text-[#25D366] font-bold">{money(p.valor_total)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {pedidos.length===0 && <p className="text-zinc-500 text-sm">Nenhuma compra encontrada.</p>}
+        <div className="space-y-2">
+          <p className="text-zinc-400 text-xs font-semibold uppercase">Enviar Mensagem</p>
+          <div className="flex gap-1.5 flex-wrap">{TEMPLATES.map(t=><button key={t.id} onClick={()=>setMsg(t.texto.replace("{nome}",sel.nome?.split(" ")[0]))} className="text-xs px-2.5 py-1 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700">{t.nome}</button>)}</div>
+          <textarea value={msg} onChange={e=>setMsg(e.target.value)} rows={3} className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm resize-none focus:outline-none focus:border-[#25D366]" />
+          {resultado&&<p className={`text-xs ${resultado.ok?"text-emerald-400":"text-rose-400"}`}>{resultado.ok?"✓":"✗"} {resultado.msg}</p>}
+          <button onClick={enviar} disabled={enviando} className="flex items-center gap-2 px-4 py-2 bg-[#25D366] hover:bg-[#22c55e] disabled:bg-zinc-700 text-black font-bold rounded-lg text-sm">
+            📤 {enviando?"Enviando...":"Enviar WhatsApp"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h2 className="text-white font-bold text-lg">Clientes</h2>
+          <p className="text-zinc-500 text-xs">Atualização automática em <span className="text-[#25D366] font-bold">{countdown}s</span></p>
+        </div>
+        <button onClick={carregar} disabled={loading} className="flex items-center gap-2 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm">
+          <span className={loading?"spin inline-block":""}>↺</span> Atualizar agora
+        </button>
+      </div>
+
+      {/* Filtro */}
+      <input type="text" value={filtro} onChange={e=>setFiltro(e.target.value)} placeholder="🔍  Filtrar por nome ou telefone..."
+        className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-white text-sm placeholder-zinc-600 focus:outline-none focus:border-[#25D366]" />
+
+      {loading && !todos.length && (
+        <div className="text-center py-16 text-zinc-500"><span className="spin inline-block text-2xl">↺</span><p className="mt-2 text-sm">Carregando clientes...</p></div>
+      )}
+      {!loading && !clientes.length && (
+        <div className="text-center py-16 text-zinc-500"><div className="text-4xl mb-2">👥</div><p className="text-sm">Nenhum cliente encontrado</p></div>
+      )}
+
+      {clientes.length > 0 && (
+        <p className="text-zinc-500 text-xs">{clientes.length} cliente(s){filtro ? " encontrado(s)" : " cadastrado(s)"}</p>
+      )}
+
+      <div className="space-y-2">
+        {clientes.map(c => (
+          <button key={c.id} onClick={()=>selecionar(c)}
+            className="w-full text-left bg-[#18181B] hover:bg-zinc-800 border border-zinc-800 rounded-xl p-3.5 transition-colors flex items-center gap-3">
+            <Avatar name={c.nome} size={9} />
+            <div className="flex-1 min-w-0">
+              <p className="text-white font-medium text-sm truncate">{c.nome}</p>
+              <div className="text-zinc-400 text-xs mt-0.5 flex gap-3 flex-wrap">
+                {(c.celular||c.fone) && <span>📱 {fmtPhone(c.celular||c.fone)}</span>}
+                {c.email && <span className="truncate">✉️ {c.email}</span>}
+              </div>
+            </div>
+            <span className="text-zinc-600 text-xs shrink-0">→</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ABA: CAMPANHAS
+// ══════════════════════════════════════════════════════════════════════════════
+function AbaCampanhas() {
+  const [template, setTemplate] = useState(TEMPLATES[1].texto);
+  const [lista, setLista] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [log, setLog] = useState([]);
+  const [progresso, setProgresso] = useState(null);
+  const [intervalo, setIntervalo] = useState(3);
+  const logRef = useRef(null);
+  useEffect(() => { if(logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [log]);
+
+  const contatos = lista.split("\n").map(l=>{ const [p,n="cliente"]=l.trim().split(",").map(x=>x.trim()); return p?{phone:p,nome:n}:null; }).filter(Boolean);
+
+  const disparar = async () => {
+    if (!contatos.length||!template) return;
+    setEnviando(true); setLog([]);
+    setProgresso({atual:0,total:contatos.length});
+    const response = await fetch("/api/campanha",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contatos,mensagem:template,intervalo:intervalo*1000})});
+    const reader = response.body.getReader(); const decoder = new TextDecoder(); let buf="";
+    while(true){
+      const {done,value}=await reader.read(); if(done)break;
+      buf+=decoder.decode(value,{stream:true});
+      const lines=buf.split("\n"); buf=lines.pop();
+      for(const line of lines){
+        if(!line.startsWith("data: "))continue;
+        try{const e=JSON.parse(line.slice(6)); if(e.tipo==="progresso"){setProgresso({atual:e.i,total:e.total}); setLog(p=>[...p,{phone:e.phone,nome:e.nome,ok:e.ok,erro:e.erro}]);}}catch{}
+      }
+    }
+    setProgresso(null); setEnviando(false);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div><h2 className="text-white font-bold text-lg">Campanhas em Massa</h2></div>
+      <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 text-amber-300 text-xs">⚠️ Intervalo mínimo recomendado: 3s entre envios.</div>
+      <div className="space-y-3">
+        <div>
+          <label className="text-zinc-400 text-xs mb-2 block">Template <span className="text-zinc-500">(use {"{nome}"} para personalizar)</span></label>
+          <div className="flex gap-1.5 flex-wrap mb-2">{TEMPLATES.map(t=><button key={t.id} onClick={()=>setTemplate(t.texto)} className="text-xs px-2.5 py-1 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700">{t.nome}</button>)}</div>
+          <textarea value={template} onChange={e=>setTemplate(e.target.value)} rows={4} className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm resize-none focus:outline-none focus:border-[#25D366]" />
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="text-zinc-400 text-xs shrink-0">Intervalo:</label>
+          <input type="range" min="2" max="10" value={intervalo} onChange={e=>setIntervalo(Number(e.target.value))} className="flex-1 accent-[#25D366]" />
+          <span className="text-[#25D366] text-sm font-bold w-10 shrink-0">{intervalo}s</span>
+        </div>
+        <div>
+          <label className="text-zinc-400 text-xs mb-2 block">Contatos — número, Nome (um por linha)</label>
+          <textarea value={lista} onChange={e=>setLista(e.target.value)} rows={6} placeholder={"11987654321, Maria\n11976543210, Ana"} className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm font-mono resize-none focus:outline-none focus:border-[#25D366] placeholder-zinc-600" />
+          <p className="text-zinc-500 text-xs mt-1">{contatos.length} contato(s)</p>
+        </div>
+        {progresso&&(<div className="bg-zinc-900 rounded-xl p-3"><div className="flex items-center gap-2 text-zinc-300 text-sm mb-2"><span className="w-2 h-2 bg-[#25D366] rounded-full animate-pulse" />Enviando {progresso.atual}/{progresso.total}</div><div className="w-full bg-zinc-800 rounded-full h-1.5"><div className="bg-[#25D366] h-1.5 rounded-full transition-all" style={{width:`${(progresso.atual/progresso.total)*100}%`}} /></div></div>)}
+        {log.length>0&&(<div ref={logRef} className="bg-zinc-900 rounded-xl p-3 max-h-40 overflow-y-auto space-y-1.5">
+          {log.map((l,i)=><div key={i} className="flex justify-between text-xs border-b border-zinc-800 last:border-0 py-1"><span className="text-zinc-300">{l.nome} <span className="text-zinc-500">{l.phone}</span></span><span className={l.ok?"text-emerald-400":"text-rose-400"}>{l.ok?"✓ Enviado":`✗ ${l.erro||"Erro"}`}</span></div>)}
+        </div>)}
+        <button onClick={disparar} disabled={enviando||!contatos.length||!template} className="flex items-center gap-2 px-5 py-2.5 bg-[#25D366] hover:bg-[#22c55e] disabled:bg-zinc-700 disabled:cursor-not-allowed text-black font-bold rounded-xl text-sm">
+          🚀 {enviando?`Enviando... (${progresso?.atual||0}/${progresso?.total||0})`:`Disparar para ${contatos.length} contato(s)`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ABA: CANAL (QR CODE)
+// ══════════════════════════════════════════════════════════════════════════════
+function AbaCanal() {
+  const [status, setStatus] = useState(null);
+  const [loadingStatus, setLoadingStatus] = useState(true);
+  const [showQR, setShowQR] = useState(false);
+  const [qrError, setQrError] = useState(false);
+  const qrRef = useRef(null);
+  const pollRef = useRef(null);
+
+  const checkStatus = useCallback(async () => {
+    try {
+      const d = await api.get("/api/zapi/status");
+      setStatus(d);
+      setLoadingStatus(false);
+      if (d.connected || d.status === "CONNECTED") { setShowQR(false); }
+    } catch { setLoadingStatus(false); }
+  }, []);
+
+  useEffect(() => { checkStatus(); pollRef.current = setInterval(checkStatus, 8000); return () => clearInterval(pollRef.current); }, []);
+
+  const conectar = () => { setShowQR(true); setQrError(false); };
+  const desconectar = async () => { await api.post("/api/zapi/disconnect",{}); checkStatus(); };
+
+  const connected = status?.connected || status?.status === "CONNECTED" || status?.phone;
+
+  return (
+    <div className="space-y-5 max-w-lg">
+      <div><h2 className="text-white font-bold text-lg">Canal WhatsApp</h2><p className="text-zinc-400 text-sm">Gerencie a conexão do seu número</p></div>
+
+      {/* Status card */}
+      <div className="bg-[#18181B] border border-zinc-800 rounded-2xl p-5">
+        <div className="flex items-center gap-3 mb-4">
+          <div className={`w-3 h-3 rounded-full ${connected ? "bg-emerald-400" : "bg-zinc-500"} ${connected ? "shadow-[0_0_8px_rgba(52,211,153,0.5)]":""}`} />
+          <span className="text-white font-semibold">{connected ? "Conectado" : "Desconectado"}</span>
+          <span className="text-xs text-zinc-500 ml-auto">{loadingStatus ? "verificando..." : ""}</span>
+        </div>
+        {status?.phone && <p className="text-zinc-400 text-sm mb-1">📱 Número: <span className="text-white">{fmtPhone(status.phone)}</span></p>}
+        {status?.name  && <p className="text-zinc-400 text-sm mb-4">👤 Nome: <span className="text-white">{status.name}</span></p>}
+
+        <div className="flex gap-2">
+          {!connected ? (
+            <button onClick={conectar} className="flex items-center gap-2 px-4 py-2 bg-[#25D366] hover:bg-[#22c55e] text-black font-bold rounded-lg text-sm">
+              📱 Conectar via QR Code
+            </button>
+          ) : (
+            <button onClick={desconectar} className="flex items-center gap-2 px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-zinc-200 rounded-lg text-sm">
+              ⏏ Desconectar
+            </button>
+          )}
+          <button onClick={checkStatus} className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded-lg text-sm">↺</button>
+        </div>
+      </div>
+
+      {/* QR Code */}
+      {showQR && (
+        <div className="bg-[#18181B] border border-zinc-800 rounded-2xl p-6 text-center fadein">
+          <p className="text-zinc-300 text-sm mb-4">Abra o <strong>WhatsApp Business</strong> → <strong>Dispositivos vinculados</strong> → <strong>Vincular dispositivo</strong> e escaneie:</p>
+          {!qrError ? (
+            <img
+              src={`/api/zapi/qrcode?t=${Date.now()}`}
+              alt="QR Code"
+              className="mx-auto rounded-xl border-4 border-white"
+              style={{ width: 220, height: 220 }}
+              onError={() => setQrError(true)}
+            />
+          ) : (
+            <div className="w-56 h-56 mx-auto bg-zinc-900 rounded-xl flex flex-col items-center justify-center gap-3">
+              <span className="text-3xl">⚠️</span>
+              <p className="text-zinc-400 text-xs px-4">Não foi possível carregar o QR Code. Verifique se a Z-API está configurada.</p>
+            </div>
+          )}
+          <button onClick={() => { setShowQR(false); setShowQR(true); setQrError(false); }}
+            className="mt-4 text-xs text-[#25D366] hover:underline">↺ Atualizar QR Code</button>
+          <p className="text-zinc-500 text-xs mt-2">O QR Code expira em ~20 segundos</p>
+        </div>
+      )}
+
+      {/* Instruções webhook */}
+      <div className="bg-zinc-900/60 border border-zinc-800 rounded-xl p-4">
+        <p className="text-zinc-300 text-sm font-semibold mb-2">⚙️ Configurar Webhook (para receber mensagens)</p>
+        <p className="text-zinc-400 text-xs mb-2">Na Z-API, configure o webhook de "On Message Received" com a URL:</p>
+        <code className="text-[#25D366] text-xs bg-zinc-900 px-3 py-2 rounded-lg block break-all">
+          https://mora-fashion-whatsapp-production.up.railway.app/webhook/messages
+        </code>
+        <p className="text-zinc-500 text-xs mt-2">Isso permite que mensagens recebidas apareçam automaticamente no CRM.</p>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ABA: CRM (CONVERSAS)
+// ══════════════════════════════════════════════════════════════════════════════
+function AbaCRM() {
+  const [chats, setChats] = useState([]);
+  const [loadingChats, setLoadingChats] = useState(false);
+  const [chatAtivo, setChatAtivo] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [loadingMsgs, setLoadingMsgs] = useState(false);
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const [busca, setBusca] = useState("");
+  const [lastPoll, setLastPoll] = useState(Date.now());
+  const msgEndRef = useRef(null);
+  const pollRef = useRef(null);
+
+  const carregarChats = async () => {
+    setLoadingChats(true);
+    try { const d = await api.get("/api/chats"); setChats(Array.isArray(d)?d:[]); }
+    catch { setChats([]); }
+    setLoadingChats(false);
+  };
+
+  const abrirChat = async (chat) => {
+    setChatAtivo(chat); setMessages([]); setLoadingMsgs(true);
+    try {
+      const d = await api.get(`/api/messages/${chat.phone}`);
+      setMessages(Array.isArray(d)?d:[]);
+    } catch { setMessages([]); }
+    setLoadingMsgs(false);
+    setChats(prev => prev.map(c => c.phone===chat.phone ? {...c, unread:0} : c));
+  };
+
+  const enviar = async () => {
+    if (!input.trim() || !chatAtivo || sending) return;
+    const text = input.trim(); setInput(""); setSending(true);
+    const msg = { text, fromMe:true, time:Date.now(), momment:Date.now() };
+    setMessages(p => [...p, msg]);
+    try { await api.post("/api/enviar", { phone:chatAtivo.phone, message:text, name:chatAtivo.name }); }
+    catch (e) { console.error(e); }
+    setSending(false);
+  };
+
+  // Polling
+  useEffect(() => {
+    carregarChats();
+    pollRef.current = setInterval(async () => {
+      try {
+        const d = await api.get(`/api/crm/updates?since=${lastPoll}`);
+        if (d.updates?.length) {
+          setLastPoll(d.serverTime);
+          setChats(prev => {
+            let next = [...prev];
+            for (const u of d.updates) {
+              const idx = next.findIndex(c => c.phone === u.phone);
+              if (idx >= 0) { next[idx] = {...next[idx], unread: u.unread, lastTime: u.lastTime, lastMessage:{text:u.newMessages.at(-1)?.text||""}}; }
+              else { next.unshift({phone:u.phone, name:u.name, unread:u.unread, lastTime:u.lastTime, lastMessage:{text:u.newMessages.at(-1)?.text||""}}); }
+            }
+            return next;
+          });
+          if (chatAtivo) {
+            const update = d.updates.find(u => u.phone === chatAtivo.phone);
+            if (update) setMessages(p => [...p, ...update.newMessages]);
+          }
+        }
+      } catch {}
+    }, 4000);
+    return () => clearInterval(pollRef.current);
+  }, [chatAtivo, lastPoll]);
+
+  useEffect(() => { msgEndRef.current?.scrollIntoView({behavior:"smooth"}); }, [messages]);
+
+  const chatsFiltrados = chats.filter(c => {
+    const q = busca.toLowerCase();
+    return !q || (c.name||"").toLowerCase().includes(q) || (c.phone||"").includes(q);
+  });
+
+  const iniciarNovoChat = async () => {
+    const phone = prompt("Digite o número com DDD (ex: 21987654321):");
+    if (!phone) return;
+    const name = prompt("Nome do contato (opcional):") || phone;
+    const chat = { phone: `55${phone.replace(/\D/g,"")}`, name };
+    setChatAtivo(chat); setMessages([]);
+  };
+
+  return (
+    <div className="flex h-[calc(100vh-120px)] -mx-4 overflow-hidden">
+      {/* ── Lista de conversas ─────────────────────────────────────────────── */}
+      <div className="w-80 border-r border-zinc-800 flex flex-col bg-[#111113] shrink-0">
+        {/* Header */}
+        <div className="p-3 border-b border-zinc-800">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-white font-semibold text-sm">Conversas</span>
+            <div className="flex gap-1">
+              <button onClick={carregarChats} className="w-7 h-7 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-lg text-xs" title="Atualizar">↺</button>
+              <button onClick={iniciarNovoChat} className="w-7 h-7 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-lg text-sm" title="Nova conversa">✏️</button>
+            </div>
+          </div>
+          <input value={busca} onChange={e=>setBusca(e.target.value)} placeholder="Buscar contato..."
+            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-white text-xs placeholder-zinc-600 focus:outline-none focus:border-zinc-600" />
+        </div>
+
+        {/* Lista */}
+        <div className="flex-1 overflow-y-auto">
+          {loadingChats && <div className="text-center py-8 text-zinc-500 text-sm">Carregando...</div>}
+          {!loadingChats && !chatsFiltrados.length && (
+            <div className="text-center py-12 text-zinc-500">
+              <div className="text-3xl mb-2">💬</div>
+              <p className="text-xs">Nenhuma conversa ainda</p>
+              <button onClick={carregarChats} className="mt-3 text-xs text-[#25D366] hover:underline">Atualizar</button>
+            </div>
+          )}
+          {chatsFiltrados.map(chat => (
+            <button key={chat.phone}
+              onClick={() => abrirChat(chat)}
+              className={`w-full flex items-center gap-3 px-3 py-3 border-b border-zinc-900 hover:bg-zinc-800/50 transition-colors text-left ${chatAtivo?.phone===chat.phone?"bg-zinc-800/80":""}`}>
+              <Avatar name={chat.name} size={10} />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between">
+                  <span className="text-white text-sm font-medium truncate">{chat.name || fmtPhone(chat.phone)}</span>
+                  <span className="text-zinc-500 text-xs shrink-0 ml-1">{fmtTime(chat.lastMessageTime || chat.lastTime)}</span>
+                </div>
+                <div className="flex items-center justify-between mt-0.5">
+                  <span className="text-zinc-400 text-xs truncate">{chat.lastMessage?.text || chat.lastMessage?.body || ""}</span>
+                  {chat.unread > 0 && (
+                    <span className="ml-1 min-w-[18px] h-[18px] bg-[#25D366] text-black text-[10px] font-bold rounded-full flex items-center justify-center px-1 shrink-0">
+                      {chat.unread > 99 ? "99+" : chat.unread}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Área do chat ──────────────────────────────────────────────────────── */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {!chatAtivo ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-zinc-500">
+            <div className="w-20 h-20 rounded-full bg-zinc-800 flex items-center justify-center text-4xl mb-4">💬</div>
+            <p className="text-lg font-semibold text-zinc-400">Selecione uma conversa</p>
+            <p className="text-sm mt-1">ou clique em ✏️ para iniciar nova</p>
+            <button onClick={carregarChats} className="mt-4 text-xs text-[#25D366] hover:underline">↺ Carregar conversas</button>
+          </div>
+        ) : (
+          <>
+            {/* Chat header */}
+            <div className="flex items-center gap-3 px-4 py-3 border-b border-zinc-800 bg-[#111113] shrink-0">
+              <Avatar name={chatAtivo.name} size={9} />
+              <div>
+                <p className="text-white font-semibold text-sm">{chatAtivo.name || fmtPhone(chatAtivo.phone)}</p>
+                <p className="text-zinc-500 text-xs">{fmtPhone(chatAtivo.phone)}</p>
+              </div>
+              <div className="ml-auto flex gap-2">
+                <button onClick={()=>abrirChat(chatAtivo)} className="text-xs text-zinc-400 hover:text-white px-2 py-1 bg-zinc-800 rounded-lg">↺ Atualizar</button>
+              </div>
+            </div>
+
+            {/* Mensagens */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-2" style={{background:"#0D0D0F"}}>
+              {loadingMsgs && <div className="text-center text-zinc-500 text-sm py-8">Carregando mensagens...</div>}
+              {!loadingMsgs && !messages.length && (
+                <div className="text-center text-zinc-500 text-sm py-8">
+                  <p>Nenhuma mensagem ainda</p>
+                  <p className="text-xs mt-1">Envie a primeira mensagem abaixo</p>
+                </div>
+              )}
+              {messages.map((m, i) => {
+                const fromMe = m.fromMe === true;
+                const text = m.text || m.body || m.message || m.text?.message || "";
+                const time = m.momment || m.time || m.timestamp;
+                return (
+                  <div key={i} className={`flex ${fromMe?"justify-end":"justify-start"} bubble-in`}>
+                    <div className={`max-w-[72%] px-3 py-2 rounded-2xl text-sm ${fromMe ? "bg-[#25D366] text-black rounded-br-sm" : "bg-zinc-800 text-white rounded-bl-sm"}`}>
+                      <p className="leading-snug">{text}</p>
+                      <p className={`text-[10px] mt-1 text-right ${fromMe?"text-black/50":"text-zinc-500"}`}>{fmtTime(time)}</p>
+                    </div>
+                  </div>
+                );
+              })}
+              <div ref={msgEndRef} />
+            </div>
+
+            {/* Input */}
+            <div className="flex items-end gap-2 p-3 border-t border-zinc-800 bg-[#111113] shrink-0">
+              {/* Templates rápidos */}
+              <div className="flex flex-col gap-2 flex-1">
+                <div className="flex gap-1 flex-wrap">
+                  {TEMPLATES.map(t => (
+                    <button key={t.id} onClick={() => setInput(t.texto.replace("{nome}", chatAtivo.name?.split(" ")[0]||"cliente"))}
+                      className="text-xs px-2 py-0.5 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-400 border border-zinc-700 transition-colors whitespace-nowrap">
+                      {t.nome}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <textarea
+                    value={input}
+                    onChange={e => setInput(e.target.value)}
+                    onKeyDown={e => { if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();enviar();} }}
+                    placeholder="Digite uma mensagem... (Enter para enviar)"
+                    rows={2}
+                    className="flex-1 bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-2 text-white text-sm resize-none focus:outline-none focus:border-[#25D366] placeholder-zinc-600"
+                  />
+                  <button onClick={enviar} disabled={!input.trim()||sending}
+                    className="w-10 h-10 self-end bg-[#25D366] hover:bg-[#22c55e] disabled:bg-zinc-700 disabled:opacity-50 rounded-xl flex items-center justify-center text-black font-bold transition-colors shrink-0">
+                    {sending ? <span className="spin text-xs">↺</span> : "→"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// APP PRINCIPAL
+// ══════════════════════════════════════════════════════════════════════════════
+function App() {
+  const [tab, setTab] = useState("crm");
+  const [status, setStatus] = useState(null);
+
+  useEffect(() => { fetch("/api/status").then(r=>r.json()).then(setStatus).catch(()=>{}); }, []);
+
+  const tabs = [
+    { id:"crm",       label:"💬 CRM"       },
+    { id:"pedidos",   label:"📦 Pedidos"   },
+    { id:"clientes",  label:"👥 Clientes"  },
+    { id:"campanhas", label:"📣 Campanhas" },
+    { id:"canal",     label:"📱 Canal"     },
+  ];
+
+  return (
+    <div className="min-h-screen flex flex-col" style={{background:"#0A0A0C"}}>
+      {/* Header */}
+      <div className="border-b border-zinc-800 bg-[#111113] sticky top-0 z-10">
+        <div className="px-4">
+          <div className="flex items-center justify-between py-2.5">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-[#25D366] flex items-center justify-center text-black font-black text-sm">M</div>
+              <div>
+                <p className="text-white font-bold text-sm leading-none">Mora Fashion</p>
+                <p className="text-zinc-500 text-xs">WhatsApp CRM</p>
+              </div>
+            </div>
+            {status && (
+              <div className="flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${status.gc?"bg-emerald-400":"bg-rose-500"}`} title={`Gestão Click: ${status.gc?"OK":"ERRO"}`} />
+                <span className={`w-2 h-2 rounded-full ${status.zapi?"bg-emerald-400":"bg-rose-500"}`} title={`Z-API: ${status.zapi?"OK":"ERRO"}`} />
+              </div>
+            )}
+          </div>
+          <div className="flex gap-0 overflow-x-auto">
+            {tabs.map(t => (
+              <button key={t.id} onClick={()=>setTab(t.id)}
+                className={`px-4 py-2 text-xs font-medium border-b-2 whitespace-nowrap transition-colors ${tab===t.id?"border-[#25D366] text-[#25D366]":"border-transparent text-zinc-400 hover:text-zinc-200"}`}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className={`flex-1 ${tab==="crm"?"":"max-w-2xl mx-auto w-full px-4 py-6"}`}>
+        {tab==="crm"       && <AbaCRM />}
+        {tab==="pedidos"   && <AbaPedidos />}
+        {tab==="clientes"  && <AbaClientes />}
+        {tab==="campanhas" && <AbaCampanhas />}
+        {tab==="canal"     && <div className="px-4 py-6"><AbaCanal /></div>}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
