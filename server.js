@@ -1,7 +1,8 @@
 require("dotenv").config();
 const express = require("express");
-const axios = require("axios");
-const path = require("path");
+const axios   = require("axios");
+const path    = require("path");
+const fs      = require("fs");
 
 const app = express();
 app.use(express.json());
@@ -15,9 +16,9 @@ const GC_BASE    = "https://api.gestaoclick.com";
 const ZAPI_BASE  = `https://api.z-api.io/instances/${ZAPI_INST}/token/${ZAPI_TOKEN}`;
 
 const gcHeaders = () => ({
-  "access-token": GC_ACCESS,
+  "access-token":        GC_ACCESS,
   "secret-access-token": GC_SECRET,
-  "Content-Type": "application/json",
+  "Content-Type":        "application/json",
 });
 
 function formatPhone(raw = "") {
@@ -27,61 +28,118 @@ function formatPhone(raw = "") {
   return "55" + digits;
 }
 
-// CRM em memória: phone -> { phone, name, messages[], unread, lastTime }
+// ════════════════════════════════════════════════════════════════════
+// CACHE LOCAL DE CLIENTES
+// ════════════════════════════════════════════════════════════════════
+const CACHE_FILE = "/tmp/mora_clientes.json";
+let cache = { data: [], syncedAt: null, syncing: false };
+
+function loadCache() {
+  try {
+    if (fs.existsSync(CACHE_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+      if (Array.isArray(parsed.data)) { cache = parsed; cache.syncing = false; }
+    }
+  } catch (e) { console.error("[CACHE] Erro ao carregar:", e.message); }
+}
+
+function saveCache() {
+  try { fs.writeFileSync(CACHE_FILE, JSON.stringify({ data: cache.data, syncedAt: cache.syncedAt }), "utf8"); }
+  catch (e) { console.error("[CACHE] Erro ao salvar:", e.message); }
+}
+
+async function syncClientes() {
+  if (cache.syncing) { console.log("[SYNC] Já em andamento, ignorando."); return; }
+  cache.syncing = true;
+  console.log("[SYNC] Iniciando sincronização de clientes...");
+  try {
+    let todos = [], pagina = 1;
+    while (true) {
+      const r = await axios.get(`${GC_BASE}/clientes`, {
+        headers: gcHeaders(),
+        params:  { limite: 100, pagina },
+        timeout: 20000,
+      });
+      const lista = Array.isArray(r.data?.data) ? r.data.data : Array.isArray(r.data) ? r.data : [];
+      todos = todos.concat(lista);
+      console.log(`[SYNC] Página ${pagina}: ${lista.length} clientes (total: ${todos.length})`);
+      if (lista.length < 100 || pagina >= 30) break;
+      pagina++;
+      await new Promise(r => setTimeout(r, 600));
+    }
+    cache.data      = todos;
+    cache.syncedAt  = new Date().toISOString();
+    cache.syncing   = false;
+    saveCache();
+    console.log(`[SYNC] ✓ Concluído: ${todos.length} clientes sincronizados.`);
+  } catch (e) {
+    cache.syncing = false;
+    console.error("[SYNC] Erro:", e.message);
+  }
+}
+
+// Inicia cache
+loadCache();
+if (!cache.data.length) syncClientes();          // sync imediato se cache vazio
+setInterval(syncClientes, 30 * 60 * 1000);       // sync automático a cada 30 min
+
+// ════════════════════════════════════════════════════════════════════
+// CRM EM MEMÓRIA
+// ════════════════════════════════════════════════════════════════════
 const crm = new Map();
 function getOrCreateChat(phone, name) {
   if (!crm.has(phone)) crm.set(phone, { phone, name: name || phone, messages: [], unread: 0, lastTime: Date.now() });
   return crm.get(phone);
 }
 
-// ── Status ────────────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════
+// ROTAS
+// ════════════════════════════════════════════════════════════════════
+
 app.get("/api/status", (req, res) => {
-  res.json({ gc: !!(GC_ACCESS && GC_SECRET), zapi: !!(ZAPI_INST && ZAPI_TOKEN) });
+  res.json({
+    gc:   !!(GC_ACCESS && GC_SECRET),
+    zapi: !!(ZAPI_INST && ZAPI_TOKEN),
+    clientes: { total: cache.data.length, syncedAt: cache.syncedAt, syncing: cache.syncing },
+  });
 });
 
-// ── Gestão Click ──────────────────────────────────────────────────────────────
+// ── Clientes (do cache local) ──────────────────────────────────────
+app.get("/api/clientes", (req, res) => {
+  res.json({ data: cache.data, syncedAt: cache.syncedAt, total: cache.data.length, syncing: cache.syncing });
+});
+
+app.get("/api/clientes/:id", async (req, res) => {
+  // tenta do cache primeiro
+  const local = cache.data.find(c => String(c.id) === String(req.params.id));
+  if (local) return res.json(local);
+  try {
+    const r = await axios.get(`${GC_BASE}/clientes/${req.params.id}`, { headers: gcHeaders() });
+    res.json(r.data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Sync manual de clientes
+app.post("/api/sync/clientes", (req, res) => {
+  res.json({ ok: true, msg: "Sincronização iniciada em segundo plano." });
+  syncClientes();
+});
+
+app.get("/api/sync/status", (req, res) => {
+  res.json({ total: cache.data.length, syncedAt: cache.syncedAt, syncing: cache.syncing });
+});
+
+// ── Pedidos ────────────────────────────────────────────────────────
 app.get("/api/pedidos", async (req, res) => {
   try {
     const r = await axios.get(`${GC_BASE}/vendas`, {
       headers: gcHeaders(),
-      params: { limite: 40, ordenar_por: "data", ordem: "desc", tipo: "vendas_balcao", ...req.query },
+      params:  { limite: 40, ordenar_por: "data", ordem: "desc", tipo: "vendas_balcao", ...req.query },
+      timeout: 15000,
     });
     res.json(r.data);
   } catch (e) {
     res.status(e.response?.status || 500).json({ error: e.response?.data?.message || e.message });
-  }
-});
-
-app.get("/api/clientes", async (req, res) => {
-  try {
-    // Busca todas as páginas de clientes
-let todos = [];
-let pagina = 1;
-let continuar = true;
-while (continuar) {
-  const r = await axios.get(`${GC_BASE}/clientes`, {
-    headers: gcHeaders(),
-    params: { ...req.query, limite: 100, pagina },
-  });
-  const data = r.data?.data || r.data || [];
-  const lista = Array.isArray(data) ? data : [];
-  todos = todos.concat(lista);
-  if (lista.length < 100) continuar = false;
-  else pagina++;
-  if (pagina > 20) continuar = false; // segurança: max 2000
-}
-res.json({ data: todos });
-  } catch (e) {
-    res.status(e.response?.status || 500).json({ error: e.response?.data?.message || e.message });
-  }
-});
-
-app.get("/api/clientes/:id", async (req, res) => {
-  try {
-    const r = await axios.get(`${GC_BASE}/clientes/${req.params.id}`, { headers: gcHeaders() });
-    res.json(r.data);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
   }
 });
 
@@ -89,22 +147,17 @@ app.get("/api/clientes/:id/pedidos", async (req, res) => {
   try {
     const r = await axios.get(`${GC_BASE}/vendas`, {
       headers: gcHeaders(),
-      params: { cliente_id: req.params.id, limite: 15, ordenar_por: "data", ordem: "desc" },
+      params:  { cliente_id: req.params.id, limite: 15, ordenar_por: "data", ordem: "desc", tipo: "vendas_balcao" },
+      timeout: 15000,
     });
     res.json(r.data);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Z-API: Conexão & QR Code ──────────────────────────────────────────────────
+// ── Z-API: Conexão ─────────────────────────────────────────────────
 app.get("/api/zapi/status", async (req, res) => {
-  try {
-    const r = await axios.get(`${ZAPI_BASE}/status`);
-    res.json(r.data);
-  } catch (e) {
-    res.status(500).json({ error: e.message, connected: false });
-  }
+  try { const r = await axios.get(`${ZAPI_BASE}/status`); res.json(r.data); }
+  catch (e) { res.status(500).json({ error: e.message, connected: false }); }
 });
 
 app.get("/api/zapi/qrcode", async (req, res) => {
@@ -113,43 +166,32 @@ app.get("/api/zapi/qrcode", async (req, res) => {
     res.setHeader("Content-Type", "image/png");
     res.setHeader("Cache-Control", "no-cache");
     res.send(r.data);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post("/api/zapi/disconnect", async (req, res) => {
-  try {
-    const r = await axios.post(`${ZAPI_BASE}/disconnect`);
-    res.json(r.data);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  try { const r = await axios.post(`${ZAPI_BASE}/disconnect`); res.json(r.data); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Z-API: Chats & Mensagens ──────────────────────────────────────────────────
+// ── Z-API: Chats & Mensagens ───────────────────────────────────────
 app.get("/api/chats", async (req, res) => {
   try {
     const r = await axios.get(`${ZAPI_BASE}/chats`, { params: { pageSize: 50 } });
     const zapiChats = Array.isArray(r.data) ? r.data : (r.data?.chats || []);
     const zapiPhones = new Set(zapiChats.map(c => String(c.phone || "").replace(/\D/g, "")));
     const localOnly = [...crm.values()].filter(c => !zapiPhones.has(String(c.phone || "").replace(/\D/g, "")));
-    const merged = [
-      ...zapiChats,
-      ...localOnly.map(c => ({
-        phone: c.phone, name: c.name,
-        lastMessage: { text: c.messages.at(-1)?.text || "" },
-        lastMessageTime: c.lastTime, unread: c.unread,
-      })),
-    ];
-    res.json(merged);
-  } catch (e) {
-    const local = [...crm.values()].map(c => ({
+    res.json([...zapiChats, ...localOnly.map(c => ({
       phone: c.phone, name: c.name,
       lastMessage: { text: c.messages.at(-1)?.text || "" },
       lastMessageTime: c.lastTime, unread: c.unread,
-    }));
-    res.json(local);
+    }))]);
+  } catch (e) {
+    res.json([...crm.values()].map(c => ({
+      phone: c.phone, name: c.name,
+      lastMessage: { text: c.messages.at(-1)?.text || "" },
+      lastMessageTime: c.lastTime, unread: c.unread,
+    })));
   }
 });
 
@@ -169,7 +211,7 @@ app.get("/api/messages/:phone", async (req, res) => {
   }
 });
 
-// ── Z-API: Enviar ─────────────────────────────────────────────────────────────
+// ── Enviar mensagem ────────────────────────────────────────────────
 app.post("/api/enviar", async (req, res) => {
   const { phone, message, name } = req.body;
   const formatted = formatPhone(phone);
@@ -185,15 +227,14 @@ app.post("/api/enviar", async (req, res) => {
   }
 });
 
-// ── Webhook: Receber mensagens da Z-API ───────────────────────────────────────
-// Configure na Z-API dashboard: On Message Received → https://SEU-DOMINIO/webhook/messages
+// ── Webhook ────────────────────────────────────────────────────────
 app.post("/webhook/messages", (req, res) => {
   try {
     const p = req.body;
-    const phone = String(p.phone || p.from || "").replace("@s.whatsapp.net", "");
-    const name  = p.chatName || p.senderName || phone;
-    const text  = p.text?.message || p.body || p.caption || "";
-    const time  = p.momment || Date.now();
+    const phone  = String(p.phone || p.from || "").replace("@s.whatsapp.net", "");
+    const name   = p.chatName || p.senderName || phone;
+    const text   = p.text?.message || p.body || p.caption || "";
+    const time   = p.momment || Date.now();
     const fromMe = p.fromMe === true;
     if (phone && text) {
       const chat = getOrCreateChat(phone, name);
@@ -202,26 +243,21 @@ app.post("/webhook/messages", (req, res) => {
       chat.lastTime = time;
       if (!fromMe) chat.unread = (chat.unread || 0) + 1;
     }
-  } catch (err) {
-    console.error("[WEBHOOK ERROR]", err.message);
-  }
+  } catch (err) { console.error("[WEBHOOK]", err.message); }
   res.json({ ok: true });
 });
 
-// Polling de atualizações para o frontend
 app.get("/api/crm/updates", (req, res) => {
   const since = parseInt(req.query.since || "0");
   const updates = [];
   for (const [phone, chat] of crm.entries()) {
     const newMsgs = chat.messages.filter(m => (m.time || m.momment || 0) > since);
-    if (newMsgs.length > 0) {
-      updates.push({ phone, name: chat.name, unread: chat.unread, lastTime: chat.lastTime, newMessages: newMsgs });
-    }
+    if (newMsgs.length > 0) updates.push({ phone, name: chat.name, unread: chat.unread, lastTime: chat.lastTime, newMessages: newMsgs });
   }
   res.json({ updates, serverTime: Date.now() });
 });
 
-// ── Campanha em massa ─────────────────────────────────────────────────────────
+// ── Campanha em massa ──────────────────────────────────────────────
 app.post("/api/campanha", async (req, res) => {
   const { contatos, mensagem, intervalo = 3000 } = req.body;
   if (!Array.isArray(contatos) || !contatos.length) return res.status(400).json({ error: "Lista vazia" });
@@ -229,7 +265,7 @@ app.post("/api/campanha", async (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
-  const send = (d) => res.write(`data: ${JSON.stringify(d)}\n\n`);
+  const send = d => res.write(`data: ${JSON.stringify(d)}\n\n`);
   send({ tipo: "inicio", total: contatos.length });
   for (let i = 0; i < contatos.length; i++) {
     const { phone, nome = "cliente" } = contatos[i];
@@ -255,7 +291,8 @@ app.get("*", (req, res) => res.sendFile(path.join(__dirname, "index.html")));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`\n🌸 Mora Fashion WhatsApp CRM rodando na porta ${PORT}`);
+  console.log(`\n🌸 Mora Fashion WhatsApp CRM — porta ${PORT}`);
   console.log(`   → Gestão Click: ${GC_ACCESS ? "✓" : "✗"} | Z-API: ${ZAPI_INST ? "✓" : "✗"}`);
-  console.log(`   → Webhook: https://SEU-DOMINIO/webhook/messages\n`);
+  console.log(`   → Cache clientes: ${cache.data.length} registros`);
+  console.log(`   → Webhook: /webhook/messages\n`);
 });
