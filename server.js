@@ -54,8 +54,23 @@ app.get("/api/pedidos", async (req, res) => {
 
 app.get("/api/clientes", async (req, res) => {
   try {
-    const r = await axios.get(`${GC_BASE}/clientes`, { headers: gcHeaders(), params: req.query });
-    res.json(r.data);
+    // Busca todas as páginas de clientes
+let todos = [];
+let pagina = 1;
+let continuar = true;
+while (continuar) {
+  const r = await axios.get(`${GC_BASE}/clientes`, {
+    headers: gcHeaders(),
+    params: { ...req.query, limite: 100, pagina },
+  });
+  const data = r.data?.data || r.data || [];
+  const lista = Array.isArray(data) ? data : [];
+  todos = todos.concat(lista);
+  if (lista.length < 100) continuar = false;
+  else pagina++;
+  if (pagina > 20) continuar = false; // segurança: max 2000
+}
+res.json({ data: todos });
   } catch (e) {
     res.status(e.response?.status || 500).json({ error: e.response?.data?.message || e.message });
   }
